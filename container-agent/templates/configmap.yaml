@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "container-agent.fullname" . }}
+data:
+  taskpods: |
+    resourceClasses:
+{{- range $rc, $value := .Values.agent.resourceClasses }}
+      {{- $rc | replace "/" "." | nindent 6 }}:
+      {{- range $key, $value := $value }}
+      {{- if ne $key "token" }}
+        {{- $key | nindent 8 }}:
+          {{- toYaml $value | nindent 10 }}
+      {{- end }}
+      {{- end }}
+{{- end }}
+    {{- if .Values.agent.serviceContainers }}
+    serviceContainers:
+      {{- toYaml .Values.agent.serviceContainers | nindent 6 }}
+    {{- end }}

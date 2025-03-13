@@ -1,0 +1,179 @@
+{{- $fullName := include "container-agent.fullname" . -}}
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "container-agent.fullname" . }}
+spec:
+  replicas: {{ .Values.agent.replicaCount }}
+  selector:
+    matchLabels: {{- toYaml .Values.agent.matchLabels | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- toYaml .Values.agent.matchLabels | nindent 8 }}
+      annotations:
+        checksum/config: {{ .Values.agent.resourceClasses | toString | sha256sum }}
+        {{- if .Values.agent.forceUpdate }}
+        timestamp: {{ now | quote }}
+        {{- end }}
+      {{- range $key, $value := .Values.agent.podAnnotations }}
+        {{ $key }}: {{ $value | quote }}
+      {{- end }}
+    spec:
+      {{- if .Values.agent.dnsConfig }}
+      dnsConfig:
+        options:
+        - name: ndots
+          value: {{ .Values.agent.dnsConfig.ndots | quote }}
+      {{- end }}
+    {{- if .Values.agent.pullSecrets }}
+      imagePullSecrets:
+      {{- range .Values.agent.pullSecrets }}
+        - name: {{ . | quote}}
+      {{- end}}
+    {{- end }}
+      serviceAccountName: {{ include "container-agent.serviceAccountName" . }}
+    {{- if .Values.agent.podSecurityContext }}
+      securityContext: {{- .Values.agent.podSecurityContext | nindent 8 }}
+    {{- end }}
+    {{- if .Values.agent.terminationGracePeriodSeconds }}
+      terminationGracePeriodSeconds: {{ .Values.agent.terminationGracePeriodSeconds }}
+    {{- end }}
+      volumes:
+        - name: taskpod-config
+          configMap:
+            name: {{ include "container-agent.fullname" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.agent.image }}
+          {{- if .digest }}
+          image: "{{- if .registry -}}{{ .registry }}/{{- end -}}{{ .repository }}@sha256:{{ .digest }}"
+          {{- else }}
+          image: "{{- if .registry -}}{{ .registry }}/{{- end -}}{{ .repository }}:{{ .tag }}"
+          {{- end }}
+          {{- end }}
+          imagePullPolicy: {{ .Values.agent.image.pullPolicy }}
+          {{- if .Values.agent.containerSecurityContext }}
+          securityContext: {{- toYaml .Values.agent.containerSecurityContext | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: taskpod-config
+              mountPath: /etc/container-agent
+          env:
+            - name: RUNNER_API
+              value: {{ .Values.agent.runnerAPI }}
+            - name: AGENT_NAME
+              value: {{ .Values.agent.name | default (include "container-agent.fullname" .) }}
+            - name: MAX_RUN_TIME
+              value: {{ .Values.agent.maxRunTime }}
+            - name: MAX_CONCURRENT_TASKS
+              value: {{ .Values.agent.maxConcurrentTasks | quote }}
+            - name: CHECK_ENABLED
+              value: {{ .Values.agent.constraintChecker.enable | quote }}
+            - name: CHECK_THRESHOLD
+              value: {{ .Values.agent.constraintChecker.threshold | quote }}
+            - name: CHECK_INTERVAL
+              value: {{ .Values.agent.constraintChecker.interval | quote }}
+            - name: KUBE_NAMESPACE
+              value: {{ .Release.Namespace | quote }}
+            - name: KUBE_TASK_POD_CONFIG
+              value: /etc/container-agent/taskpods
+            - name: KUBE_TOKEN_SECRETS
+              value: {{- if .Values.agent.customSecret -}}
+                    {{- printf " %s" .Values.agent.customSecret -}},
+                    {{- end }}
+                    {{- if include "container-agent.create-secret" . -}}
+                    {{- printf " %s" $fullName -}}
+                    {{- end }}
+            {{- with .Values.logging.image }}
+            - name: KUBE_LOGGING_IMAGE
+              value: "{{- if .registry -}}{{ .registry }}/{{- end -}}{{ .repository }}:{{ .tag }}"
+            {{- end }}
+            - name: KUBE_LOGGING_SECRET
+              value: {{ .Values.logging.serviceAccount.secret.name | quote }}
+            - name: KUBE_AUTODETECT_PLATFORM
+              value: {{ .Values.agent.autodetectPlatform | quote }}
+            {{- with .Values.agent }}
+            # Agent logging settings
+            - name: O11Y_LEVEL
+              value: {{- if ne .loggingLevel nil }} {{ .loggingLevel | quote }} {{- else }} {{ .log.level | quote }} {{- end }}
+            - name: O11Y_FORMAT
+              value: {{ .log.format | quote }}
+
+            # GC configuration settings
+            - name: KUBE_GC_ENABLED
+              value: {{- if ne .kubeGCEnabled nil }} {{ .kubeGCEnabled | quote }} {{- else }} {{ .gc.enabled | quote }} {{- end }}
+            - name: KUBE_GC_THRESHOLD
+              value: {{- if .kubeGCThreshold }} {{ .kubeGCThreshold | quote }} {{- else }} {{ .gc.threshold | quote }} {{- end }}
+            - name: KUBE_GC_INTERVAL
+              value: {{ .gc.interval | quote }}
+            {{- end }}
+
+            {{- with .Values.orchestrator }}
+            # Settings for the orchestrator init container
+
+            {{- $imageRef := include "image.ref" .image -}}
+            {{- if ne $imageRef "" }}
+            - name: KUBE_RUNNER_INIT_IMAGE
+              value: {{ $imageRef | quote }}
+            {{- end }}
+
+            {{- end }}
+
+            {{- if .Values.agent.ssh.enabled }}
+            {{- $sshName := printf "%s-ssh" (include "container-agent.fullname" .) }}
+            - name: KUBE_SSH_IS_ENABLED
+              value: "true"
+            - name: KUBE_SSH_GATEWAY_NAME
+              value: {{ $sshName }}
+            - name: KUBE_SSH_SERVICE_NAME
+              value: {{ $sshName }}
+            {{- end }} # if .Values.agent.ssh.enabled
+
+            {{- if .Values.proxy.enabled }}
+            - name: PROXY__SECRETS__HTTP__USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-credentials
+                  key: http-username
+                  optional: true
+            - name: PROXY__SECRETS__HTTP__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-credentials
+                  key: http-password
+                  optional: true
+            - name: PROXY__SECRETS__HTTPS__USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-credentials
+                  key: https-username
+                  optional: true
+            - name: PROXY__SECRETS__HTTPS__PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: proxy-credentials
+                  key: https-password
+                  optional: true
+            {{ include "proxy.env" (list .Values.proxy "$(PROXY__SECRETS__HTTP__USERNAME)" "$(PROXY__SECRETS__HTTP__PASSWORD)" "$(PROXY__SECRETS__HTTPS__USERNAME)" "$(PROXY__SECRETS__HTTPS__PASSWORD)" "svc.cluster.local") | indent 12 }}
+            {{- end }}
+
+            {{- range $key, $value := .Values.agent.environment }}
+            - name: "{{ $key }}"
+              value: "{{ $value }}"
+            {{- end }}
+
+          livenessProbe: {{ toYaml .Values.agent.livenessProbe | nindent 12 }}
+          readinessProbe: {{ toYaml .Values.agent.readinessProbe | nindent 12 }}
+          {{- if .Values.agent.resources }}
+          resources: {{ toYaml .Values.agent.resources | nindent 12 }}
+          {{- end }}
+    {{- if .Values.agent.nodeSelector }}
+      nodeSelector: {{ toYaml .Values.agent.nodeSelector | nindent 8 }}
+    {{- end }}
+    {{- if .Values.agent.tolerations }}
+      tolerations: {{ toYaml .Values.agent.tolerations | nindent 8 }}
+    {{- end }}
+    {{- if .Values.agent.affinity }}
+      affinity: {{ toYaml .Values.agent.affinity | nindent 8 }}
+    {{- end }}
