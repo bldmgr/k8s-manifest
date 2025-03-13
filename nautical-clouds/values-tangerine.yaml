@@ -7,11 +7,10 @@ spec:
   project: default
   source:
     chart: container-agent
-    repoURL: https://packagecloud.io/circleci/container-agent/helm
+    repoURL: https://packagecloud.io/circleci
     targetRevision: 101.1.3
     helm:
       releaseName: container-agent
   destination:
     server: "https://kubernetes.default.svc"
     namespace: circleci
-    
